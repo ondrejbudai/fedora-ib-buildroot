@@ -1,0 +1,73 @@
+name: Build Fedora RISC-V buildroots
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: build-fedora-riscv-buildroots
+  cancel-in-progress: false
+
+jobs:
+  releases:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.releases.outputs.matrix }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Find supported Fedora releases
+        id: releases
+        run: |
+          matrix="$(python3 scripts/fedora-releases.py)"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: releases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.releases.outputs.matrix) }}
+    name: Fedora ${{ matrix.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install RISC-V emulation
+        run: |
+          sudo apt update
+          sudo apt install -y qemu-user-static
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | podman login ghcr.io \
+            --username "${{ github.actor }}" \
+            --password-stdin
+
+      - name: Build and push image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ matrix.version }}
+        run: |
+          image="${IMAGE,,}"
+          podman build \
+            --arch riscv64 \
+            --os linux \
+            --format oci \
+            --pull=always \
+            --file Containerfile \
+            --build-arg "FEDORA_BASE_TAG=${{ matrix.version }}" \
+            --tag "$image" \
+            .
+          podman push "$image"
